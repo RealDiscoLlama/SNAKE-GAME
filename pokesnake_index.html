@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>PokéSnake</title>
+  <style>
+    html,body{margin:0;padding:0;background:#0a0f10;color:#e6f2ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;height:100%;-webkit-user-select:none;user-select:none;}
+    .wrap{display:flex;flex-direction:column;align-items:center;gap:10px;min-height:100svh;padding:12px;}
+    #game{background:#0b1e12;display:block;border-radius:16px;touch-action:none;box-shadow:0 12px 40px rgba(0,0,0,.6);border:2px solid #153820}
+    .hud{display:flex;gap:14px;align-items:center;justify-content:space-between;width:min(620px,94vw)}
+    .hud .stats{display:flex;gap:14px;align-items:center}
+    .btn{padding:10px 14px;border-radius:12px;border:1px solid #2a4252;background:#102531;color:#e6f2ff}
+    .btn:active{transform:translateY(1px)}
+    .controls{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,64px);gap:10px;width:min(440px,94vw);}
+    .controls button{background:#102531;border:1px solid #2a4252;border-radius:14px;color:#e6f2ff;font-size:18px}
+    .controls .empty{opacity:0}
+    .footer{opacity:.8;font-size:12px}
+    .title{font-weight:800;letter-spacing:.5px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hud">
+    <div class="stats">
+      <div class="title">PokéSnake</div>
+      <div>Score: <span id="score">0</span></div>
+      <div>Best: <span id="best">0</span></div>
+      <div>Speed: <span id="speed">1</span>x</div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="pauseBtn">⏯️</button>
+      <button class="btn" id="restartBtn">🔄</button>
+    </div>
+  </div>
+
+  <canvas id="game" width="352" height="352" aria-label="PokéSnake game board"></canvas>
+
+  <div class="controls" aria-label="On-screen controls">
+    <div class="empty"></div>
+    <button id="up" aria-label="Up">▲</button>
+    <div class="empty"></div>
+    <button id="left" aria-label="Left">◀</button>
+    <button id="down" aria-label="Down">▼</button>
+    <button id="right" aria-label="Right">▶</button>
+    <div class="empty"></div>
+    <button id="boost" class="btn" aria-label="Speed Boost">⚡</button>
+    <div class="empty"></div>
+  </div>
+  <div class="footer">Theme: Poké Balls for the snake, Oran Berry for food. Swipe or tap arrows. Hold ⚡ to dash.</div>
+</div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const tile = 16, gridSize = canvas.width / tile | 0;
+
+  const scoreEl = document.getElementById('score');
+  const bestEl = document.getElementById('best');
+  const speedEl = document.getElementById('speed');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const restartBtn = document.getElementById('restartBtn');
+
+  let snake, dir, food, score, best, running, baseDelay, boost, tickHandle;
+
+  // ---------- Drawing helpers (no external images) ----------
+  function drawGrassBG(){
+    // two-tone grass
+    for(let y=0;y<gridSize;y++){
+      for(let x=0;x<gridSize;x++){
+        ctx.fillStyle = ((x+y)&1) ? '#0e301b' : '#0b2816';
+        ctx.fillRect(x*tile, y*tile, tile, tile);
+      }
+    }
+    // subtle grid
+    ctx.strokeStyle = 'rgba(255,255,255,.03)';
+    for(let i=1;i<gridSize;i++){
+      ctx.beginPath(); ctx.moveTo(i*tile,0); ctx.lineTo(i*tile,canvas.height); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0,i*tile); ctx.lineTo(canvas.width,i*tile); ctx.stroke();
+    }
+  }
+
+  function drawPokeBallCell(x,y,variant){
+    // variant 0 = body, 1 = head (Master-ball-ish purple), 2 = shiny (rare body)
+    const cx = x*tile+tile/2, cy = y*tile+tile/2, r = tile*0.45;
+    ctx.lineWidth = Math.max(1, tile*0.08);
+
+    // top half
+    ctx.beginPath();
+    ctx.fillStyle = variant===1 ? '#7b5ad9' : (variant===2 ? '#c62828' : '#e53935'); // purple for head, red for body
+    ctx.arc(cx,cy,r,Math.PI,0,false);
+    ctx.lineTo(cx,cy);
+    ctx.closePath();
+    ctx.fill();
+
+    // bottom half
+    ctx.beginPath();
+    ctx.fillStyle = '#fafafa';
+    ctx.arc(cx,cy,r,0,Math.PI,false);
+    ctx.lineTo(cx,cy);
+    ctx.closePath();
+    ctx.fill();
+
+    // black band
+    ctx.strokeStyle = '#111';
+    ctx.beginPath();
+    ctx.moveTo(cx-r, cy);
+    ctx.lineTo(cx+r, cy);
+    ctx.stroke();
+
+    // center button
+    ctx.fillStyle = '#f5f5f5';
+    ctx.beginPath();
+    ctx.arc(cx,cy,r*0.28,0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = '#444';
+    ctx.stroke();
+  }
+
+  function drawOranBerry(x,y){
+    const cx = x*tile+tile/2, cy = y*tile+tile/2;
+    const r = tile*0.40;
+    // berry
+    ctx.fillStyle = '#3a7bd5';
+    ctx.beginPath();
+    ctx.arc(cx,cy,r,0,Math.PI*2);
+    ctx.fill();
+    // shine
+    ctx.fillStyle = 'rgba(255,255,255,.25)';
+    ctx.beginPath();
+    ctx.arc(cx-3, cy-3, r*0.5, 0, Math.PI*2);
+    ctx.fill();
+    // leaf
+    ctx.fillStyle = '#53b36a';
+    ctx.beginPath();
+    ctx.ellipse(cx+5, cy-8, 5, 8, -0.5, 0, Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,.25)';
+    ctx.stroke();
+  }
+
+  // ---------- Game state ----------
+  function randCell(){ return {x: (Math.random()*gridSize|0), y: (Math.random()*gridSize|0)}; }
+
+  function reset(){
+    snake = [{x:10,y:10},{x:9,y:10},{x:8,y:10}];
+    dir = {x:1,y:0};
+    food = placeFood();
+    score = 0;
+    baseDelay = 120;
+    boost = false;
+    running = true;
+    updateHUD();
+    draw();
+  }
+
+  function placeFood(){
+    let f;
+    do { f = randCell(); } while (snake.some(s=>s.x===f.x && s.y===f.y));
+    return f;
+  }
+
+  function updateHUD(){
+    scoreEl.textContent = score;
+    best = Math.max(+localStorage.pokesnakeBest||0, score);
+    localStorage.pokesnakeBest = best;
+    bestEl.textContent = best;
+    speedEl.textContent = boost? 2: 1;
+    pauseBtn.textContent = running ? '⏸️' : '▶️';
+  }
+
+  function step(){
+    if(!running) return;
+    const head = {x: snake[0].x + dir.x, y: snake[0].y + dir.y};
+    head.x = (head.x + gridSize) % gridSize;
+    head.y = (head.y + gridSize) % gridSize;
+    if(snake.some((s,i)=> i && s.x===head.x && s.y===head.y)){
+      running=false; updateHUD(); return;
+    }
+    snake.unshift(head);
+    if(head.x===food.x && head.y===food.y){
+      score+=10; food = placeFood(); baseDelay = Math.max(60, baseDelay - 2);
+    } else { snake.pop(); }
+    draw();
+  }
+
+  function draw(){
+    drawGrassBG();
+    // draw food
+    drawOranBerry(food.x, food.y);
+    // draw snake segments (head special)
+    for(let i=snake.length-1;i>=0;i--){
+      const s = snake[i];
+      const variant = (i===0?1:0);
+      drawPokeBallCell(s.x, s.y, variant);
+    }
+  }
+
+  function loop(){
+    clearTimeout(tickHandle);
+    const delay = baseDelay / (boost?2:1);
+    tickHandle = setTimeout(()=>{ step(); loop(); }, delay);
+  }
+
+  function setDir(nx,ny){
+    if(snake.length>1 && nx===-dir.x && ny===-dir.y) return;
+    dir = {x:nx,y:ny};
+  }
+
+  // ---------- Touch-first controls (fast on iOS) ----------
+  function bindBtn(id, fnDown){
+    const btn = document.getElementById(id);
+    btn.addEventListener('touchstart', e=>{ e.preventDefault(); fnDown(); }, {passive:false});
+    btn.addEventListener('mousedown', e=>{ e.preventDefault(); fnDown(); });
+  }
+  bindBtn('up',   ()=>setDir(0,-1));
+  bindBtn('down', ()=>setDir(0, 1));
+  bindBtn('left', ()=>setDir(-1,0));
+  bindBtn('right',()=>setDir(1, 0));
+
+  const boostBtn = document.getElementById('boost');
+  boostBtn.addEventListener('touchstart', e=>{ e.preventDefault(); boost=true; updateHUD(); }, {passive:false});
+  boostBtn.addEventListener('mousedown', e=>{ e.preventDefault(); boost=true; updateHUD(); });
+  function stopBoost(){ boost=false; updateHUD(); }
+  document.addEventListener('touchend', stopBoost);
+  document.addEventListener('mouseup', stopBoost);
+
+  bindBtn('pauseBtn', ()=>{ running=!running; updateHUD(); if(running) loop(); });
+  bindBtn('restartBtn', ()=>{ reset(); });
+
+  // Swipe on canvas
+  let startTouch=null;
+  canvas.addEventListener('touchstart',e=>{ startTouch = e.touches[0]; },{passive:true});
+  canvas.addEventListener('touchmove',e=>{
+    if(!startTouch) return;
+    const t = e.touches[0], dx = t.clientX - startTouch.clientX, dy = t.clientY - startTouch.clientY;
+    if(Math.abs(dx)+Math.abs(dy) > 30){
+      if(Math.abs(dx) > Math.abs(dy)) setDir(Math.sign(dx),0); else setDir(0,Math.sign(dy));
+      startTouch=null;
+    }
+  },{passive:true});
+  canvas.addEventListener('touchend',()=>{ startTouch=null; });
+
+  // Start on first interaction
+  document.addEventListener('touchstart', function once(){ reset(); loop(); document.removeEventListener('touchstart', once); }, {once:true});
+  document.addEventListener('mousedown', function once(){ reset(); loop(); document.removeEventListener('mousedown', once); }, {once:true});
+
+  // Load best
+  best = +localStorage.pokesnakeBest||0;
+  bestEl.textContent = best;
+})();
+</script>
+</body>
+</html>
